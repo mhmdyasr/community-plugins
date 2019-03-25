@@ -15,6 +15,8 @@ import socket
 # makehuman data types (the encoding routine will croak on anything
 # that isn't scalar, array or dict)
 
+DEBUG_JSON = False
+
 class JsonCall():
 
 
@@ -23,6 +25,7 @@ class JsonCall():
         self.data = None
         self.function = "generic"
         self.error = ""
+        self.debug = DEBUG_JSON
 
         if jsonData:
             self.initializeFromJson(jsonData)
@@ -31,9 +34,11 @@ class JsonCall():
     def initializeFromJson(self,jsonData):
 
         jsonData = jsonData.replace('\\', '\\\\') # allow windows paths in data
-        print("JSON:\n")
-        print(jsonData)
-        print("")
+
+        if DEBUG_JSON:
+            print("JSON raw string:\n")
+            print(jsonData)
+            print("")
 
         j = json.loads(jsonData)
         if not j:
@@ -176,7 +181,7 @@ class JsonCall():
 
 
     def serialize(self):
-        ret = "{\n";
+        ret = "{\n"
         ret = ret + "  \"function\": \"" + self.function + "\",\n"
         ret = ret + "  \"error\": \"" + self.error + "\",\n"
         ret = ret + "  \"params\": {\n"
@@ -194,26 +199,43 @@ class JsonCall():
 
         ret = ret + "  " + self.pythonValueToJsonValue(self.data,"data") + "\n}\n"
 
+        if DEBUG_JSON:
+            print("END RESULT JSON:\n")
+            print(ret.replace('\\', '\\\\'))
         return ret.replace('\\', '\\\\') # allow windows paths in data
 
 
-    def send(self, host = "127.0.0.1", port = 12345):
+    def send(self, host = "127.0.0.1", port = 12345, expectBinaryResponse = False):
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client.connect(('127.0.0.1', 12345))
+        client.connect((host, port))
         client.send(bytes(self.serialize(), 'utf-8'))
-     
-        data = ""
-    
-        while True:
-            buf = client.recv(1024)
-            if len(buf) > 0:
-                data += buf.strip().decode('utf-8')
-            else:
-                break
-    
-        if data:
-            return JsonCall(data)
-        else:            
-            return None;
+
+        data = None
+
+        if not expectBinaryResponse:
+            data = ""
+            while True:
+                buf = client.recv(1024)
+                if len(buf) > 0:
+                    data += buf.strip().decode('utf-8')
+                else:
+                    break
+            if data:
+                data = JsonCall(data)
+        else:
+            if DEBUG_JSON:
+                print("Getting binary response")
+            data = bytearray()
+            while True:
+                buf = client.recv(1024)
+                #print("Got " + str(len(buf)) + " bytes.")
+                if len(buf) > 0:
+                    data += bytearray(buf)
+                else:
+                    break
+            if DEBUG_JSON:
+                print("Total received length: " + str(len(data)))
+
+        return data
 
 

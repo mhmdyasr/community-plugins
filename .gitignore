@@ -1,6 +1,12 @@
 *.pyc
 __pycache__
 .project
+.idea
 .settings
 *.swp
 
+/deploy_media.xml
+/package.json
+/scripts/
+/nbproject/
+/node_modules/

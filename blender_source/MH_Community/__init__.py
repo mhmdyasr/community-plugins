@@ -1,127 +1,114 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
+import bpy
+
+BLENDER_REGION = "UI"
+
+if bpy.app.version < (2, 80, 0):
+    BLENDER_REGION = "TOOLS"
+
 bl_info = {
     "name": "MH Community Plug-in",
     "author": "Joel Palmius",
-    "version": (0, 3),
-    "blender": (2, 77, 0),
+    "version": (0, 4),
+    "blender": (2, 80, 0),
     "location": "View3D > Properties > MH",
-    "description": "Post import MakeHuman operations",
-    "wiki_url": "https://github.com/makehumancommunity/community-plugins/tree/master/blender_source/MH_Community",
+    "description": "MakeHuman interactive operations",
+    "wiki_url": "https://github.com/makehumancommunity/makehuman-plugin-for-blender",
     "category": "MakeHuman"}
 
-if "bpy" in locals():
-    print("Reloading MH community plug-in v %d.%d" % bl_info["version"])
-    import imp
-    imp.reload(mh_sync)  # directory
-    imp.reload(separate_eyes)
-    imp.reload(snap_on_finger_rig)
-    imp.reload(snap_on_ik_rig)
-    imp.reload(amputate_fingers)
-    imp.reload(rig_info)
-else:
-    print("Loading MH community plug-in v %d.%d" % bl_info["version"])
-    from . import mh_sync # directory
-    from . import separate_eyes
-    from . import snap_on_finger_rig
-    from . import snap_on_ik_rig
-    from . import amputate_fingers
-    from . import rig_info
+print("Loading MH community plug-in v %d.%d" % bl_info["version"])
+from . import mh_sync # directory
+from . import kinect_sensor # directory
+from . import separate_eyes
+from .rig import RigInfo, BoneSurgery, IkRig, FingerRig
+from . import animation_trimming
 
-import bpy
-from bpy.props import BoolProperty,StringProperty
+from bpy.props import BoolProperty, StringProperty, EnumProperty, IntProperty, CollectionProperty, FloatProperty
+from .mh_sync.importer_ui import addImporterUIToTab, registerImporterConstantsAndSettings
+from .mh_sync.bone_ui import addBoneUIToTab, registerBoneConstantsAndSettings
+from .kinect_sensor.kinect_ui import addKinectUIToTab, registerKinectConstantsAndSettings
+
 #===============================================================================
-def register():
-    bpy.types.Scene.MhFeetOnGround = BoolProperty(name="Feet on Ground", description="Model was exported with feet on ground.  Checking this causes\nroot bone location translation to be cleared.", default=False)
-    bpy.types.Scene.MhNoLocation = BoolProperty(name="No Location Translation", description="Some Expressions have bone translation on locked bones.\nChecking this causes it to be cleared.  When false,\nALT-G will NOT clear these.", default=False)
-    bpy.types.Scene.MhExprFilterTag = StringProperty(name="Tag:", description="", default="")
-    bpy.utils.register_module(__name__)
-
-def unregister():
-    bpy.utils.unregister_module(__name__)
-
-if __name__ == "__main__":
-    unregister()
-    register()
-
-print("MH community plug-in load complete")
-#===============================================================================
-class Community_Panel(bpy.types.Panel):
-    bl_label = "Community"
+class MHC_PT_Community_Panel(bpy.types.Panel):
+    bl_label = "MakeHuman"
     bl_space_type = "VIEW_3D"
-    bl_region_type = "TOOLS"
+    bl_region_type = BLENDER_REGION
     bl_category = "MakeHuman"
 
     def draw(self, context):
         layout = self.layout
         scn = context.scene
 
-        layout.label(text="Mesh Operations:", icon="MESH_DATA")
-        layout.operator("mh_community.sync_mh_mesh", text="Sync with MH")
-        layout.operator("mh_community.separate_eyes", text="Separate Eyes")
+        layout.prop(scn, 'mhTabs', expand=True)
 
-        layout.separator()
+        if scn.mhTabs == MESH_TAB:
+            # Broken out to mh_sync/importer_ui
+            addImporterUIToTab(layout, scn)
 
-        layout.label(text="Bone Operations:", icon="ARMATURE_DATA")
-        layout.operator("mh_community.sync_pose", text="Sync with MH")
-        layout.prop(scn, "MhFeetOnGround")
-        layout.prop(scn, "MhNoLocation")
-        layout.separator()
-        layout.operator("mh_community.ik_rig", text="Convert to IK rig")
-        layout.operator("mh_community.finger_rig", text="Add Finger IK Bones")
-        layout.operator("mh_community.amputate_fingers", text="Remove Finger Bones")
-        
-        layout.separator()
-        layout.label(text="Expression Transfer:")
-        layout.prop(scn, "MhExprFilterTag")
-        layout.operator("mh_community.expressions_trans", text="To Pose Lib")
+            layout.separator()
+
+            generalSyncBox = layout.box()
+            generalSyncBox.label(text="Various")
+            generalSyncBox.operator("mh_community.sync_mh_mesh", text="Sync with MH")
+            generalSyncBox.operator("mh_community.separate_eyes")
+
+        elif scn.mhTabs == BONE_TAB:
+            addBoneUIToTab(layout, scn)
+
+        else:
+            addKinectUIToTab(layout, scn)
 #===============================================================================
-class MeshSyncOperator(bpy.types.Operator):
-    """Synchronize the shape of a human with MH"""
-    bl_idname = "mh_community.sync_mh_mesh"
-    bl_label = "Synchronize MH Mesh"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    def execute(self, context):
-        from .mh_sync.sync_mesh import SyncMesh
-        SyncMesh()
-        return {'FINISHED'}
+MESH_TAB   = 'A'
+BONE_TAB   = 'B'
+KINECT_TAB = 'C'
 
-    @classmethod
-    def poll(cls, context):
-        ob = context.object
-        return ob and ob.type == 'MESH'
-#===============================================================================
-class PoseSyncOperator(bpy.types.Operator):
-    """Synchronize the pose of the skeleton of a human with MH"""
-    bl_idname = "mh_community.sync_pose"
-    bl_label = "Synchronize MH Pose"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    def execute(self, context):
-        from .mh_sync.sync_pose import SyncPose
-        SyncPose()
-        return {'FINISHED'}
+# While MHX2 may set this, do not to rely on MHX.  Required in multiple places.
+bpy.types.Armature.exportedUnits = bpy.props.StringProperty(
+    name='Exported Units',
+    description='either METERS, DECIMETERS, or INCHES.  determined in RigInfo.determineExportedUnits().  Stored in armature do only do once.',
+    default = ''
+)
 
-    @classmethod
-    def poll(cls, context):
-        ob = context.object
-        return ob and ob.type == 'ARMATURE'
-#===============================================================================
-class ExpressionTransOperator(bpy.types.Operator):
-    """Transfer MakeHuman expressions to a pose library"""
-    bl_idname = "mh_community.expressions_trans"
-    bl_label = "Expressions to Poselib"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    def execute(self, context):
-        from .mh_sync.expr_to_poselib import ExprToPoselib
-        ExprToPoselib()
-        return {'FINISHED'}
+classes =  [
+    MHC_PT_Community_Panel
+]
 
-    @classmethod
-    def poll(cls, context):
-        ob = context.object
-        return ob and ob.type == 'ARMATURE' and ob.pose_library
-#===============================================================================
+from .operators import *
+
+classes.extend(OPERATOR_CLASSES)
+
+def register():
+    from bpy.utils import register_class
+    for cls in classes:
+        register_class(cls)
+
+    bpy.types.Scene.mhTabs = bpy.props.EnumProperty(
+    name='meshOrBoneOrKinect',
+    items = (
+             (MESH_TAB  , "Mesh"  , "Operators related to Make Human meshes"),
+             (BONE_TAB  , "Rig"  , "IK & other bone operators on Make Human skeletons"),
+             (KINECT_TAB, "Kinect", "Motion Capture using Kinect V2 for converted Make Human meshes"),
+        ),
+    default = MESH_TAB
+)
+
+    registerImporterConstantsAndSettings()
+    registerBoneConstantsAndSettings()
+    registerKinectConstantsAndSettings()
+
+
+def unregister():
+    from bpy.utils import unregister_class
+    for cls in reversed(classes):
+        unregister_class(cls)
+
+    del bpy.types.Scene.MhHandleHelper
+    del bpy.types.Scene.MhScaleMode
+
+if __name__ == "__main__":
+    unregister()
+    register()
+
+print("MH community plug-in load complete")

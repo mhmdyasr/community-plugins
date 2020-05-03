@@ -12,6 +12,7 @@ import pprint
 import struct
 import time
 import itertools
+from ..extra_groups import vgroupInfo
 
 from .material import *
 from .fetch_server_data import FetchServerData
@@ -20,6 +21,9 @@ from ..util import *
 pp = pprint.PrettyPrinter(indent=4)
 
 ENABLE_PROFILING_OUTPUT = False
+
+_EVALUATED_MAKESKIN = False
+_MAKESKIN_AVAILABLE = False
 
 PROXY_COLORS = {"Proxymeshes": (1.0, 0.7, 0.7, 1.0),
                 "Clothes": (0.5, 1.0, 1.0, 1.0),
@@ -34,6 +38,22 @@ class ImportProxyBinary():
     def __init__(self, humanObject, humanName, proxyInfo, onFinished=None, collection=None):
         print("Importing proxy: " + proxyInfo["name"])
 
+        global _EVALUATED_MAKESKIN
+        global _MAKESKIN_AVAILABLE
+
+        if not _EVALUATED_MAKESKIN:
+            ms = checkMakeSkinAvailable()
+            if ms:
+                from makeskin import MAKESKIN_VERSION
+                if MAKESKIN_VERSION >= LEAST_REQUIRED_MAKESKIN_VERSION:
+                    _MAKESKIN_AVAILABLE = True
+                    print("A useful version of MakeSkin is available")
+                else:
+                    print("MakeSkin is available, but in a too old version. At least " + str(LEAST_REQUIRED_MAKESKIN_VERSION) + " is required. Not showing related options.")
+            else:
+                print("MakeSkin is not available or not enabled. Not showing related options.")
+            _EVALUATED_MAKESKIN = True
+            
         #pp.pprint(proxyInfo)
 
         self.humanObject = humanObject
@@ -46,6 +66,17 @@ class ImportProxyBinary():
         self.prefixMaterial = bpy.context.scene.MhPrefixMaterial
         self.matobjname = bpy.context.scene.MhMaterialObjectName
         self.prefixProxy = bpy.context.scene.MhPrefixProxy
+        self.detailedHelpers = bpy.context.scene.MhDetailedHelpers
+        self.enhancedSkin = bpy.context.scene.MhEnhancedSkin
+        self.enhancedSSS = bpy.context.scene.MhEnhancedSSS
+        self.makeSkin = False
+        if _MAKESKIN_AVAILABLE:
+            self.makeSkin = bpy.context.scene.MhUseMakeSkin
+        else:
+            print("makeskin is not available")
+        self.blendMat = bpy.context.scene.MhOnlyBlendMat
+        self.extraGroups = bpy.context.scene.MhExtraGroups
+        self.extraSlots = bpy.context.scene.MhExtraSlots
 
         self.scaleFactor = 0.1
 
@@ -53,22 +84,6 @@ class ImportProxyBinary():
         self.lastMillis = self.startMillis
 
         self.scaleMode = str(bpy.context.scene.MhScaleMode)
-
-
-        self.generalPreset = str(bpy.context.scene.MhGeneralPreset)
-
-        if self.generalPreset != "BELOW":
-            self.scaleMode = "DECIMETER"
-            self.handleMaterials = "CREATENEW"
-            self.importWhat = "EVERYTHING"
-            self.helpers = "MASK"
-            self.subdiv = False
-            self.matobjname = True
-            self.importRig = False
-            self.detailedHelpers = True
-            self.rigisparent = False
-            self.adjust = False
-            self.prefixProxy = False
 
         if self.scaleMode == "DECIMETER":
             self.scaleFactor = 1.0
@@ -89,6 +104,7 @@ class ImportProxyBinary():
         self.obj.MhObjectType = proxyInfo["type"]
         self.obj.MhProxyUUID = proxyInfo["uuid"]
         self.obj.MhProxyName = proxyInfo["name"]
+        self.obj.MhScaleFactor = self.scaleFactor
 
         # TODO: Set more info, for example name of toon
 
@@ -299,6 +315,42 @@ class ImportProxyBinary():
             vgroup = self.obj.vertex_groups.new(name="Mid")
             vgroup.add(self.mid_verts, 1.0, 'ADD')
 
+    def assignExtraVgroups(self):
+        vgi = vgroupInfo[self.proxyInfo['uuid']]
+        for key in vgi:
+            verts = vgi[key]
+            newvg = self.obj.vertex_groups.new(name=key)
+            newvg.add(verts, 1.0, 'ADD')
+
+    def vgroupMaterials(self, mat):
+        vgi = vgroupInfo[self.proxyInfo['uuid']]
+        for ob in bpy.context.selected_objects:
+            deselectObject(ob)
+        activateObject(self.obj)
+
+        for key in vgi:
+            matname = key
+
+            if self.prefixMaterial:
+                matname = self.humanName + "." + matname
+
+            newMat = bpy.data.materials.get(matname)
+
+            if not newMat:
+                newMat = mat.copy()
+                newMat.name = matname
+            self.obj.data.materials.append(newMat)
+
+            matidx = self.obj.material_slots.find(matname)
+            bpy.context.object.active_material_index = matidx
+
+            bpy.ops.object.vertex_group_set_active(group=key)
+            bpy.ops.object.editmode_toggle()
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.vertex_group_select()
+            bpy.ops.object.material_slot_assign()
+            bpy.ops.object.editmode_toggle()
+
     def afterMeshData(self):
 
         bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
@@ -306,10 +358,14 @@ class ImportProxyBinary():
         self.bm.to_mesh(self.mesh)
         self.bm.free()
 
-        if self.generalPreset == "MAKECLOTHES":
+        if self.detailedHelpers:
             self.makeClothesExtras()
 
         self.maskFaces()
+
+        uuid = self.proxyInfo['uuid']
+        if uuid in vgroupInfo and self.extraGroups:
+            self.assignExtraVgroups()
 
         del self.vertCache
         del self.faceCache
@@ -323,6 +379,17 @@ class ImportProxyBinary():
         if self.matobjname or matname in ["material", "materialMaterial", "bodyMaterial", "", "none"]:
             matname = self.proxyInfo["name"]
 
+        print(self.proxyInfo["type"])
+
+        matFile = "defaultMaterial.json"
+        if self.matobjname and self.proxyInfo["type"] == "Proxymeshes":
+            matname = "body"
+            if self.enhancedSkin:
+                if self.enhancedSSS:
+                    matFile = "skinMaterialSSS.json"
+                else:
+                    matFile = "skinMaterial.json"
+
         if self.prefixMaterial:
             matname = self.humanName + "." + matname
 
@@ -331,11 +398,29 @@ class ImportProxyBinary():
         if len(baseColor) < 4:
             baseColor = tuple([*baseColor, data.get("viewPortAlpha", 1.0)])
 
-        mat = createMHMaterial(matname, data, baseColor=baseColor, ifExists=self.handleMaterials)
+        makeSkin = self.makeSkin
 
-        self.obj.data.materials.append(mat)
+        if not "materialFile" in data:
+            if makeSkin:
+                print("Material did not provide info about file name. Cannot use MakeSkin for this import.")
+                makeSkin = False
+
+        mat = None
+        
+        if not makeSkin or (self.enhancedSkin and self.proxyInfo["type"] == "Proxymeshes"):
+            mat = createMHMaterial2(matname, data, baseColor=baseColor, ifExists=self.handleMaterials, materialFile=matFile)
+            self.obj.data.materials.append(mat)
+        else:
+            print("Using MakeSkin for this material")
+            createMakeSkinMaterial(matname, obj=self.obj, materialSettingsHash=data, importBlendMat=True, onlyBlendMat=self.blendMat)
+
         if not self.onFinished is None:
             self.onFinished(self)
+
+        uuid = self.proxyInfo['uuid']
+        if mat and uuid in vgroupInfo and self.extraGroups and self.extraSlots:
+            self.vgroupMaterials(mat)
+
 
 
 

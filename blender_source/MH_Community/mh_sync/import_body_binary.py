@@ -21,6 +21,7 @@ from .import_proxy_binary import ImportProxyBinary
 from .import_weighting import ImportWeighting
 from ..util import *
 from .meshutils import *
+from ..extra_groups import vgroupInfo
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -42,33 +43,28 @@ class ImportBodyBinary():
         self.startMillis = int(round(time.time() * 1000))
         self.lastMillis = self.startMillis
 
-        self.generalPreset = str(bpy.context.scene.MhGeneralPreset)
-
         self.scaleMode = str(bpy.context.scene.MhScaleMode)
         self.handleMaterials = str(bpy.context.scene.MhHandleMaterials)
         self.prefixMaterial = bpy.context.scene.MhPrefixMaterial
         self.importWhat = str(bpy.context.scene.MhImportWhat)
         self.helpers = str(bpy.context.scene.MhHandleHelper)
-        self.subdiv = str(bpy.context.scene.MhAddSubdiv)
+        self.subdiv = bpy.context.scene.MhAddSubdiv
         self.matobjname = bpy.context.scene.MhMaterialObjectName
         self.importRig = bpy.context.scene.MhImportRig
         self.detailedHelpers = bpy.context.scene.MhDetailedHelpers
+        self.addSimpleMaterials = bpy.context.scene.MhAddSimpleMaterials
         self.rigisparent = bpy.context.scene.MhRigIsParent
         self.adjust = bpy.context.scene.MhAdjustPosition
         self.addCollection = bpy.context.scene.MhAddCollection
-        self.baseColor = (1.0, 0.7, 0.7)
+        self.defaultSkinColor = (1.0, 0.7, 0.7, 1.0)
+        self.hiddenFaces = bpy.context.scene.MhHiddenFaces
+        self.subCollection = bpy.context.scene.MhSubCollection
+        self.enhancedSkin = bpy.context.scene.MhEnhancedSkin
+        self.enhancedSSS = bpy.context.scene.MhEnhancedSSS
+        self.extraGroups = bpy.context.scene.MhExtraGroups
+        self.extraSlots = bpy.context.scene.MhExtraSlots
 
-        if self.generalPreset != "BELOW":
-            self.scaleMode = "DECIMETER"
-            self.handleMaterials = "CREATENEW"
-            self.importWhat = "EVERYTHING"
-            self.helpers = "MASK"
-            self.subdiv = False
-            self.matobjname = True
-            self.importRig = False
-            self.detailedHelpers = False
-            self.rigisparent = False
-            self.adjust = False
+        self.baseColor = (1.0, 0.7, 0.7)
 
         self.all_joint_verts = []
         self.all_helper_verts = []
@@ -112,20 +108,36 @@ class ImportBodyBinary():
 
         self.obj.MhHuman = True
         self.obj.MhObjectType = "Basemesh"
+        self.obj.MhScaleFactor = self.scaleFactor
 
         # TODO: Set more info, for example name of toon
 
         self.collection = None
         if self.addCollection and bl28():
             self.collection = bpy.data.collections.new(self.name)
-            bpy.context.collection.children.link(self.collection)
+            if self.subCollection:
+                bpy.context.collection.children.link(self.collection)
+                bpy.context.collection.hide_select = False
+                bpy.context.collection.hide_render = False
+                bpy.context.collection.hide_viewport = False
+                # TODO:      Unfortunately, these three are not enough to avoid the crash that
+                # TODO:      happens when a collection is hidden in the viewport. Apparently
+                # TODO:      something more needs to be done to show the collection, but
+                # TODO:      at this point I don't know what
+            else:
+                bpy.context.scene.collection.children.link(self.collection)
+            self.collection.hide_select = False
+            self.collection.hide_render = False
+            self.collection.hide_viewport = False
 
         linkObject(self.obj, self.collection)
         activateObject(self.obj)
         selectObject(self.obj)
 
-        if "skinColor" in data:
-            self.baseColor = tuple(data["skinColor"])
+        self.skinColor = data.get('skinColor', self.defaultSkinColor)
+
+        if len(self.skinColor) == 3:
+            self.skinColor.append(1.0)
 
         self.mesh = bpy.context.object.data
         self.bm = bmesh.new()
@@ -148,11 +160,9 @@ class ImportBodyBinary():
 
         addNumpyArrayAsVerts(self.bm, numpyMesh, self.vertCache, self.vertPosCache)
 
-        i = 0
-        while i < iMax:
+        for i in range(iMax):
             if numpyMesh[i][1] < self.minimumZ:
                 self.minimumZ = numpyMesh[i][1]
-            i = i + 1
 
         self._profile("gotVerticesData")
         FetchServerData('getBodyFacesBinary',self.gotFacesData,True)
@@ -198,16 +208,14 @@ class ImportBodyBinary():
         iMax = len(numpyMesh)
         assert (iMax == int(self.bodyInfo["numFaceUVMappings"]))
 
-        i = 0
         faceTexco = np.zeros((iMax, 4, 2), self.texco.dtype)
 
-        while i < iMax:
+        for i in range(iMax):
             stride = 0
             while stride < 4:
                 idx = numpyMesh[i][stride]
                 faceTexco[i][stride] = self.texco[int(idx)]
                 stride = stride + 1
-            i = i + 1
 
         uv_layer = self.bm.loops.layers.uv.verify()
 
@@ -252,12 +260,13 @@ class ImportBodyBinary():
 
                 if name.startswith("helper-"):
                     self.all_helper_verts.extend(verts)
-                if self.helpers == "MASK":
+
+                if self.helpers in ("MASK", "NOTHING"):
                     if name == "body" or self.detailedHelpers:
                         vgroup = self.obj.vertex_groups.new(name=name)
                         vgroup.add(verts, 1.0, 'ADD')
                     else:
-                        if self.generalPreset == "MAKECLOTHES" and name.startswith("helper-"):
+                        if self.detailedHelpers and name.startswith("helper-"):
                             vgroup = self.obj.vertex_groups.new(name=name)
                             vgroup.add(verts, 1.0, 'ADD')
 
@@ -276,11 +285,10 @@ class ImportBodyBinary():
             vgroup.add(self.all_joint_verts, 1.0, 'ADD')
 
 
-        if self.generalPreset == "MAKECLOTHES":
+        if self.detailedHelpers:
             print("IS MAKECLOTHES")
 
-            i = 0
-            while i < len(self.vertPosCache):
+            for i in range(len(self.vertPosCache)):
                 vert = self.vertPosCache[i]
                 x = vert[0]
 
@@ -292,7 +300,6 @@ class ImportBodyBinary():
                     if x > 0.0:
                         self.left_verts.append(i)
 
-                i = i + 1
 
             if len(self.right_verts) > 0:
                 vgroup = self.obj.vertex_groups.new(name="Right")
@@ -307,10 +314,13 @@ class ImportBodyBinary():
                 vgroup.add(self.mid_verts, 1.0, 'ADD')
 
         if self.helpers == "MASK":
-            mask = self.obj.modifiers.new("Mask", 'MASK')
+            mask = self.obj.modifiers.new("Toggle helper visibility", 'MASK')
             mask.vertex_group = "body"
             mask.show_in_editmode = True
             mask.show_on_cage = True
+
+        if self.addSimpleMaterials:
+            bpy.ops.mh_community.add_simple_materials()
 
         self._profile("handleHelpers")
 
@@ -355,6 +365,41 @@ class ImportBodyBinary():
 
         self._profile("maskBody")
 
+    def assignExtraVgroups(self):
+        vgi = vgroupInfo["basemesh"]
+        for key in vgi:
+            verts = vgi[key]
+            newvg = self.obj.vertex_groups.new(name=key)
+            if verts and len(verts) > 0:
+                newvg.add(verts, 1.0, 'ADD')
+
+    def vgroupMaterials(self, mat):
+        vgi = vgroupInfo["basemesh"]
+        self._deselectAll()
+        activateObject(self.obj)
+
+        for key in vgi:
+            matname = key
+            verts = vgi[key]
+
+            if self.prefixMaterial:
+                matname = self.name + "." + matname
+
+            newMat = mat.copy()
+            newMat.name = matname
+            self.obj.data.materials.append(newMat)
+
+            matidx = self.obj.material_slots.find(matname)
+            bpy.context.object.active_material_index = matidx
+
+            bpy.ops.object.vertex_group_set_active(group=key)
+            bpy.ops.object.editmode_toggle()
+            bpy.ops.mesh.select_all(action='DESELECT')
+            bpy.ops.object.vertex_group_select()
+            bpy.ops.object.material_slot_assign()
+            bpy.ops.object.editmode_toggle()
+
+
     def afterMeshData(self):
         self._profile()
         bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
@@ -362,7 +407,12 @@ class ImportBodyBinary():
         self.bm.to_mesh(self.mesh)
         self.bm.free()
         self.handleHelpers()
-        self.maskBody()
+        if self.extraGroups:
+            self.assignExtraVgroups()
+
+        if self.hiddenFaces == "MASK":
+            self.maskBody()
+        # TODO: handle "MATERIAL" and "DELETE" too
 
         del self.vertCache
         del self.faceCache
@@ -370,6 +420,7 @@ class ImportBodyBinary():
         del self.vertPosCache
 
         FetchServerData('getBodyMaterialInfo',self.gotBodyMaterialInfo)
+
 
     def gotBodyMaterialInfo(self, data):
         self._profile()
@@ -381,9 +432,19 @@ class ImportBodyBinary():
         if self.prefixMaterial:
             matname = self.name + "." + matname
 
-        mat = createMHMaterial(matname, data, self.baseColor, ifExists=self.handleMaterials)
+        matFile = "defaultMaterial.json"
+        if self.enhancedSkin:
+            if self.enhancedSSS:
+                matFile = "skinMaterialSSS.json"
+            else:
+                matFile = "skinMaterial.json"
+
+        mat = createMHMaterial2(matname, data, baseColor=self.skinColor, ifExists=self.handleMaterials, materialFile=matFile)
 
         self.obj.data.materials.append(mat)
+
+        if self.extraGroups and self.extraSlots:
+            self.vgroupMaterials(mat)
 
         self._profile("gotBodyMaterialInfo")
 
@@ -565,7 +626,12 @@ class ImportBodyBinary():
         if self.adjust:
             self.objToAdjust.location.z = -self.groundMean
 
+        print("SUBDIV")
+        print(self.subdiv)
+        print(type(self.subdiv))
+
         if self.subdiv:
+            print("Adding subdiv")
             subdiv = self.obj.modifiers.new("Subdivision", 'SUBSURF')
             subdiv.levels = 0
             subdiv.render_levels = 2

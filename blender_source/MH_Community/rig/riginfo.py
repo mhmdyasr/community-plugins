@@ -46,18 +46,6 @@ class RigInfo:
 
         return False
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    def hasFeetOnGround(self):
-        current_mode = bpy.context.object.mode
-        bpy.ops.object.mode_set(mode='EDIT')
-        eBones = self.armature.data.edit_bones
-
-        # test if the Z of calf is negative, should be negative when feet NOT on ground
-        calfZ = eBones[self.calf(False)].head.z
-
-        bpy.ops.object.mode_set(mode=current_mode)
-        return calfZ > 0
-    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    # While MHX2 may set this, do not to rely on MHX.
     def determineExportedUnits(self):
         if len(self.armature.data.exportedUnits) > 0: return self.armature.data.exportedUnits
 
@@ -72,7 +60,7 @@ class RigInfo:
         totalHeight = headTail - footTail # done this way to be feet on ground independent
         if totalHeight < 5: ret = 'METERS' # decimeter threshold
         elif totalHeight <= 22: ret = 'DECIMETERS' # 21.7 to 23.9 is sort of no man's land of decimeters of tallest & inches of smallest
-        else: ret = 'INCHES'
+        else: ret = 'CENTIMETERS'
 
         print ('armature exported units is ' + ret + ', headTail: ' + str(headTail) + ', footTail: ' + str(footTail))
 
@@ -82,9 +70,9 @@ class RigInfo:
     def unitMultplierToExported(self):
         units = self.determineExportedUnits()
 
-        if units == 'METERS': return 0.1
-        elif units == 'DECIMETERS': return 1
-        else: return 3.93701
+        if units == 'METERS': return 1
+        elif units == 'DECIMETERS': return 10
+        else: return 100
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     def hasIKRigs(self):
         return self.hasFingerIK() or self.hasIK()
@@ -92,6 +80,7 @@ class RigInfo:
         return 'thumb.ik.L' in self.armature.data.bones
     def hasIK(self):
         return 'elbow.ik.L' in self.armature.data.bones
+
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     def hasFingers(self):
         hand = self.hand(False)
@@ -118,3 +107,85 @@ class RigInfo:
                 meshes.append(object)
 
         return meshes
+
+    #===========================================================================
+    # for mocap support
+    # the retargeting constraint space for arm bones is 'WORLD', while 'LOCAL' for rest
+    def isArmBone(self, boneName):
+        bones = self.clavicle(True) + self.clavicle(False) + \
+                self.upperArm(True) + self.upperArm(False) + \
+                self.lowerArm(True) + self.lowerArm(False) + \
+                self.hand(True) + self.hand(False)
+        return self.isFinger(boneName) or boneName in bones
+
+    def isFinger(self, boneName):
+        # for some skeleton, no thumbs or hand tips, so defensively coded
+        if boneName == self.handTip(True ): return True
+        if boneName == self.handTip(False): return True
+        if boneName == self.thumb  (True ): return True
+        if boneName == self.thumb  (False): return True
+        return False
+
+    # for animation scaling when compared with sensor's equivalent
+    # being in world space also includes any amount the armature may have been raised / lowered to allow mesh to touch ground
+    def pelvisInWorldSpace(self):
+        return self.getBoneInWorldSpace(self.armature.pose.bones[self.pelvis])
+
+    # for animation root placement
+    def rootInWorldSpace(self):
+        return self.getBoneInWorldSpace(self.armature.pose.bones[self.root])
+
+    # for animation root placement
+    def getBoneInWorldSpace(self, bone):
+        current_mode = bpy.context.object.mode
+        bpy.ops.object.mode_set(mode='POSE')
+
+        worldMat = self.armature.convert_space(pose_bone = bone, matrix = bone.matrix, from_space = 'POSE',  to_space = 'WORLD')
+        bpy.ops.object.mode_set(mode=current_mode)
+
+        offset = worldMat.to_translation()
+        return offset
+
+    def getSensorMapping(self, sensorType = 'KINECT2'):
+        if sensorType == 'KINECT2':
+
+            return {
+            # keys are kinect joints names coming from the sensor
+            # values are bone names whose tail is at the joint
+            'SpineBase'    : None,
+            'SpineMid'     : self.pelvis,
+            'SpineShoulder': self.upperSpine,
+
+            'Neck'         : self.neckBase,
+            'Head'         : self.head,
+
+            'ShoulderLeft' : self.clavicle(True, True),
+            'ElbowLeft'    : self.upperArm(True, True),
+            'WristLeft'    : self.lowerArm(True, True),
+            'HandLeft'     : self.hand(True, True),
+            'HandTipLeft'  : self.handTip(True, True),
+            'ThumbLeft'    : self.thumb(True, True),
+
+            'ShoulderRight': self.clavicle(False, True),
+            'ElbowRight'   : self.upperArm(False, True),
+            'WristRight'   : self.lowerArm(False, True),
+            'HandRight'    : self.hand(False, True),
+            'HandTipRight' : self.handTip(False, True),
+            'ThumbRight'   : self.thumb(False, True),
+
+            'HipLeft'      : self.hip(True, True),
+            'KneeLeft'     : self.thigh(True, True),
+            'AnkleLeft'    : self.calf(True, True),
+            'FootLeft'     : self.foot(True, True),
+
+            'HipRight'     : self.hip(False, True),
+            'KneeRight'    : self.thigh(False, True),
+            'AnkleRight'   : self.calf(False, True),
+            'FootRight'    : self.foot(False, True)
+        }
+        # add next sensor, eg., KINECT_AZURE
+        elif sensorType == 'KINECT_AZURE':
+            return None
+
+        # this sensor is not supported
+        else: return None
